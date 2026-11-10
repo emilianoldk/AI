@@ -16,7 +16,7 @@ function workspaceToolResult(args,workspace){
  if(op==='start_session'&&workspace.activeSession)return {action:null,result:'Ya hay una sesión activa. Usá el contexto de esa sesión para guiar a Franco; no inicies otra.'};
  const allowed=new Set(['add_task','update_task','complete_task','delete_task','create_project','activate_project','add_project_note','start_session','stop_session','start_routine','query_transit','outside_briefing']);
  if(!allowed.has(op))return {action:null,result:'Operación no reconocida.'};
- return {action:{type:'workspace_action',...Object.fromEntries(Object.entries(args).filter(([k])=>['id','titulo','fecha','prioridad','repeticion','proyecto','texto','minutos','linea','sentido','parada','rutina'].includes(k))),projectId:workspace.activeProject||'',announce:!!workspace.voiceRequested,operation:op},result:'Acción preparada para el panel local. Si requiere línea, parada, dirección o fecha y faltan, el panel pedirá completarlos. Los cambios se aplican en el dispositivo; no afirmes haber enviado mensajes o consultado llegadas sin datos.'};
+ return {action:{type:'workspace_action',...Object.fromEntries(Object.entries(args).filter(([k])=>['id','titulo','fecha','prioridad','repeticion','proyecto','texto','minutos','linea','sentido','parada','rutina'].includes(k)))},projectId:workspace.activeProject||'',announce:!!workspace.voiceRequested,operation:op},result:'Acción preparada para el panel local. Si requiere línea, parada, dirección o fecha y faltan, el panel pedirá completarlos. Los cambios se aplican en el dispositivo; no afirmes haber enviado mensajes o consultado llegadas sin datos.'};
 }
 
 // Personalidad visual y tono. La API conserva reply/actions/sentences y agrega companion.
@@ -71,10 +71,6 @@ function enrichNexusResponse(payload,context) {
   const reply=parsed.reply||'Me quedé sin una respuesta útil. ¿Probamos de nuevo?';
   return {...payload,reply,sentences:splitSentences(reply),companion:companionFor({...context,error:!!payload.error},parsed.visual)};
 }
-
-// netlify/functions/nexus-brain.js → adaptado para Vercel
-// Vercel usa `module.exports = async (req, res)` (Express-style)
-// Netlify usa `exports.handler = async (event)`
 
 // ═══════════════════════════════════════════════════════════
 // HERRAMIENTAS EXISTENTES
@@ -311,7 +307,7 @@ function detectarMoodYPlaylist(text) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// GROQ API
+// GROQ API (Optimizado con Qwen)
 // ═══════════════════════════════════════════════════════════
 
 async function transcribirConGroq(audioBase64) {
@@ -333,8 +329,14 @@ async function transcribirConGroq(audioBase64) {
   return data.text;
 }
 
-async function chatConGroq(messages, maxTokens = 500, tools = null, retryWithoutTools = false) {
-  const body = { model: 'openai/gpt-oss-120b', messages, temperature: 0.7, max_tokens: maxTokens };
+async function chatConGroq(messages, maxTokens = 1500, tools = null, retryWithoutTools = false) {
+  const body = { 
+    model: 'qwen-2.5-72b', 
+    messages, 
+    temperature: 0.7, 
+    max_tokens: maxTokens 
+  };
+  
   if (tools && !retryWithoutTools) { 
     body.tools = tools; 
     body.tool_choice = 'auto'; 
@@ -448,10 +450,6 @@ function respuestaDirectaDolar(d) {
 function detectIntent(text) {
   const t = text.toLowerCase();
   
-  // ═══════════════════════════════════════════════════════════
-  // MÚSICA — detección directa por regex (sin LLM)
-  // ═══════════════════════════════════════════════════════════
-  
   if (/\b(pausá|pausa|pausar|pará|para)\b.*\b(música|musica|canción|cancion|tema)\b/.test(t)) return 'musica_pausar';
   if (/\b(reanudá|reanuda|continuá|continua|seguí|segui|resumí|resumi)\b.*\b(música|musica|canción|cancion)\b/.test(t)) return 'musica_reanudar';
   if (/\b(siguiente|próxima|proxima)\b.*\b(canción|cancion|tema|música|musica)\b/.test(t)) return 'musica_siguiente';
@@ -474,10 +472,6 @@ function detectIntent(text) {
   
   const mood = detectarMoodYPlaylist(t);
   if (mood && /\b(estoy|me siento)\b/.test(t) && /\b(musica|música|playlist|escuchar)\b/.test(t)) return 'musica_mood';
-  
-  // ═══════════════════════════════════════════════════════════
-  // RESTO DE INTENCIONES
-  // ═══════════════════════════════════════════════════════════
   
   if (/^briefing|dame el briefing|resumen del día/i.test(t)) return 'briefing';
   if (/\b(modo enfoque|modo concentración)\b/.test(t)) return 'modo_enfoque';
@@ -766,7 +760,7 @@ ${statusContext}${continuityContext}${panelContext}`;
 }
 
 // ═══════════════════════════════════════════════════════════
-// HANDLER — ADAPTADO PARA VERCEL (req, res)
+// HANDLER
 // ═══════════════════════════════════════════════════════════
 
 module.exports = async (req, res) => {
@@ -776,7 +770,7 @@ module.exports = async (req, res) => {
   const respond = payload => res.status(200).json(enrichNexusResponse(payload, companionContext));
 
   if(req.method==='GET'&&req.query?.health==='1')return res.status(200).json({ok:true,version:'integral-1.0',configured:{ai:!!process.env.GROQ_API_KEY,search:!!process.env.TAVILY_API_KEY,youtube:!!process.env.YOUTUBE_API_KEY},checkedAt:new Date().toISOString()});
-  // CORS (por si acaso)
+  
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -826,7 +820,6 @@ module.exports = async (req, res) => {
     let respuestaRapida = null;
     let frontendActions = [];
 
-    // Briefing
     if (intent === 'briefing') {
       const [horaData, climaData, dolarData] = await Promise.all([getHora(), getClima(extractCiudad(cleanText), 'hoy'), getDolar()]);
       const saludo = getSaludoPorHora();
@@ -841,7 +834,6 @@ module.exports = async (req, res) => {
       return respond({ reply: briefing, transcribedText: cleanText, intent: 'briefing', fast: true, sentences: splitSentences(briefing) });
     }
     
-    // Modo enfoque
     if (intent === 'modo_enfoque') {
       const reply = 'Listo, bajamos las distracciones.';
       return respond({ reply, transcribedText: cleanText, intent: 'modo_enfoque', fast: true, actions: [{ type: 'focus_mode', active: true }], sentences: splitSentences(reply) });
@@ -852,7 +844,6 @@ module.exports = async (req, res) => {
       return respond({ reply, transcribedText: cleanText, intent: 'modo_normal', fast: true, actions: [{ type: 'focus_mode', active: false }], sentences: splitSentences(reply) });
     }
     
-    // CONTROL DE MÚSICA
     if (intent === 'musica_pausar' || intent === 'musica_reanudar' || intent === 'musica_siguiente' || intent === 'musica_anterior' || intent === 'musica_cerrar') {
       let accion = 'pausar';
       if (intent === 'musica_pausar') accion = 'pausar';
@@ -870,13 +861,11 @@ module.exports = async (req, res) => {
       return respond({ reply, transcribedText: cleanText, intent, fast: true, actions: [{ type: 'music_control', accion }], sentences: splitSentences(reply) });
     }
     
-    // PREGUNTAR QUÉ MÚSICA
     if (intent === 'musica_preguntar') {
       const reply = '¿Qué te gustaría escuchar? Puedo poner rock, pop, jazz, clásica, electrónica, o algo según cómo te sientas.';
       return respond({ reply, transcribedText: cleanText, intent: 'musica_preguntar', fast: true, sentences: splitSentences(reply) });
     }
     
-    // MÚSICA POR CANCIÓN/ARTISTA/GÉNERO
     if (intent === 'musica_cancion') {
       const match = cleanText.match(/(?:reproducí|reproduce|poné|pon|quiero escuchar|escuchar|música de|musica de|playlist de|tocá|toca)\s+(.+)/i);
       const query = match ? match[1].trim().replace(/[.,!?]$/, '') : cleanText;
@@ -900,7 +889,6 @@ module.exports = async (req, res) => {
       }
     }
     
-    // MÚSICA POR MOOD
     if (intent === 'musica_mood') {
       const mood = detectarMoodYPlaylist(cleanText);
       if (mood) {
@@ -953,7 +941,7 @@ Para tareas, proyectos, sesiones, rutinas, salir de casa o transporte usá nexus
     const message = await chatConGroq([
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userMessage }
-    ], 550, [...TOOLS,WORKSPACE_TOOL]);
+    ], 1500, [...TOOLS,WORKSPACE_TOOL]);
     console.log(`✅ LLM en ${Date.now() - t1}ms`);
 
     if (message.tool_calls && message.tool_calls.length > 0) {
@@ -977,7 +965,7 @@ Para tareas, proyectos, sesiones, rutinas, salir de casa o transporte usá nexus
         { role: 'user', content: userMessage },
         message,
         ...toolMessages,
-      ], 250);
+      ], 800);
       
       const finalReply = finalMessage.content || 'Listo.';
       
