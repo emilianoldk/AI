@@ -146,9 +146,6 @@ async function getClima(ciudad = 'Buenos Aires', cuando = 'hoy') {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-// DÓLAR + EURO (dolarapi.com ya devuelve euro, solo faltaba leerlo)
-// ═══════════════════════════════════════════════════════════
 async function getDolar() {
   try {
     const res = await fetch('https://dolarapi.com/v1/dolares');
@@ -158,14 +155,13 @@ async function getDolar() {
       const nombre = item.nombre.toLowerCase().replace('dólar ', '').replace(' ', '_');
       result[nombre] = { compra: item.compra, venta: item.venta, actualizado: item.fechaActualizacion };
     });
-    // Euro: dolarapi lo expone en otro endpoint
     try {
       const euroRes = await fetch('https://dolarapi.com/v1/cotizaciones/eur');
       if (euroRes.ok) {
         const euroData = await euroRes.json();
         result.euro = { compra: euroData.compra, venta: euroData.venta, actualizado: euroData.fechaActualizacion };
       }
-    } catch (_) { /* si falla el euro, no rompemos el dólar */ }
+    } catch (_) { }
     return result;
   } catch (err) {
     return { error: 'No pude consultar el dólar' };
@@ -322,38 +318,64 @@ async function transcribirConGroq(audioBase64) {
   return data.text;
 }
 
-async function chatConGroq(messages, maxTokens = 1500, tools = null, retryWithoutTools = false) {
-  const body = {
-    model: 'openai/gpt-oss-120b',
-    messages,
-    temperature: 0.7,
-    max_tokens: maxTokens
-  };
+// ═══════════════════════════════════════════════════════════
+// NUEVA FUNCIÓN CON FALLBACK: GROQ -> GEMINI
+// ═══════════════════════════════════════════════════════════
+async function chatConModelo(messages, maxTokens = 1500, tools = null) {
+  // 1. INTENTO PRINCIPAL CON GROQ
+  try {
+    const body = {
+      model: 'openai/gpt-oss-120b',
+      messages,
+      temperature: 0.7,
+      max_tokens: maxTokens,
+    };
+    if (tools) { body.tools = tools; body.tool_choice = 'auto'; }
 
-  if (tools && !retryWithoutTools) {
-    body.tools = tools;
-    body.tool_choice = 'auto';
-  }
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
 
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-
-    if (tools && !retryWithoutTools && err.includes('Failed to parse tool call arguments')) {
-      console.warn('⚠️ Tool calling falló, reintentando sin tools...');
-      return chatConGroq(messages, maxTokens, null, true);
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Groq error: ${res.status} - ${err.substring(0, 150)}`);
     }
+    const data = await res.json();
+    return data.choices[0]?.message;
 
-    throw new Error(`Groq chat error: ${res.status} - ${err.substring(0, 200)}`);
+  } catch (groqError) {
+    console.warn(`⚠️ Groq falló (${groqError.message}). Intentando con Gemini...`);
+
+    // 2. FALLBACK CON GEMINI (Endpoint compatible con OpenAI)
+    try {
+      const body = {
+        model: 'gemini-2.5-flash-lite',
+        messages,
+        temperature: 0.7,
+        max_tokens: maxTokens,
+      };
+      if (tools) { body.tools = tools; body.tool_choice = 'auto'; }
+
+      const res = await fetch('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${process.env.GEMINI_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`Gemini error: ${res.status} - ${err.substring(0, 150)}`);
+      }
+      const data = await res.json();
+      return data.choices[0]?.message;
+
+    } catch (geminiError) {
+      console.error('💥 Ambos modelos fallaron:', geminiError.message);
+      return { content: 'No pude procesar tu consulta en este momento. Probá de nuevo en un rato.' };
+    }
   }
-
-  const data = await res.json();
-  return data.choices[0]?.message;
 }
 
 const TOOLS = [
@@ -419,9 +441,6 @@ function respuestaDirectaClima(d) {
   const advice=weatherAdvice(d);return reply+(advice?' '+advice:'');
 }
 
-// ═══════════════════════════════════════════════════════════
-// DÓLAR + EURO en la respuesta directa
-// ═══════════════════════════════════════════════════════════
 function respuestaDirectaDolar(d) {
   if (d.error) return 'No pude consultar las cotizaciones.';
   const blue = d.blue, oficial = d.oficial, euro = d.euro;
@@ -737,9 +756,10 @@ module.exports = async (req, res) => {
     if (req.method === 'GET' && req.query?.health === '1') {
       return res.status(200).json({
         ok: true,
-        version: 'integral-1.1',
+        version: 'integral-1.2',
         configured: {
           ai: !!process.env.GROQ_API_KEY,
+          geminiFallback: !!process.env.GEMINI_API_KEY,
           search: !!process.env.TAVILY_API_KEY,
           youtube: !!process.env.YOUTUBE_API_KEY,
         },
@@ -907,7 +927,7 @@ Para tareas, proyectos, sesiones, rutinas, salir de casa o transporte usá nexus
 
     console.log('🧠 LLM con tools...');
     const t1 = Date.now();
-    const message = await chatConGroq([
+    const message = await chatConModelo([
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userMessage }
     ], 1500, [...TOOLS, WORKSPACE_TOOL]);
@@ -929,7 +949,7 @@ Para tareas, proyectos, sesiones, rutinas, salir de casa o transporte usá nexus
       }
 
       console.log('🧠 LLM segunda pasada...');
-      const finalMessage = await chatConGroq([
+      const finalMessage = await chatConModelo([
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
         message,
