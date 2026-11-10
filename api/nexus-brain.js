@@ -331,7 +331,7 @@ async function transcribirConGroq(audioBase64) {
 
 async function chatConGroq(messages, maxTokens = 1500, tools = null, retryWithoutTools = false) {
   const body = { 
-    model: 'openai/gpt-oss-120b', 
+    model: 'llama-3.3-70b-versatile', 
     messages, 
     temperature: 0.7, 
     max_tokens: maxTokens 
