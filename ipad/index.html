@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="NEXUS">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="format-detection" content="telephone=no">
+  <title>NEXUS · iPad</title>
+  <link rel="apple-touch-icon" href="./icon.png">
+  <link rel="icon" type="image/png" href="./icon.png">
+  <link rel="stylesheet" href="./app.css?v=1">
+</head>
+<body>
+  <noscript>Activá JavaScript en Ajustes &gt; Safari &gt; Avanzado para conversar con NEXUS.</noscript>
+  <div id="parallax-layer"><header class="topbar"><img src="./icon.png" alt="NEXUS" width="40" height="40"><div><strong>NEXUS</strong><span>Tu espacio personal · iPad</span></div><button id="install" type="button">Agregar a Inicio</button></header></div>
+  <main class="welcome">
+    <button id="buddy" class="buddy" type="button" aria-label="Abrir conversación con NEXUS"><span class="eyes"><i></i><i></i></span><span id="accessory" aria-hidden="true"></span></button>
+    <div class="intro"><p class="eyebrow">SIEMPRE CERCA</p><h1>Hola, Franco.</h1><p>Conversemos, organicemos tu día<br>o trabajemos en algo juntos.</p><button id="start-chat" class="primary" type="button">Abrir NEXUS</button></div>
+    <p id="nexus-state" class="state" role="status">Preparando tu espacio…</p>
+    <p id="notice" class="notice" role="status"></p>
+  </main>
+  <section id="legacy-panel" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="legacy-title"><div class="modal"><header><h2 id="legacy-title">NEXUS</h2><button id="legacy-close" type="button">Cerrar</button></header><div id="legacy-content"></div></div></section>
+  <script src="./vendor/promise.min.js"></script>
+  <script src="./compat.js?v=1"></script>
+  <script src="./bridge.js?v=1"></script>
+  <script src="./workspace.js?v=1"></script>
+  <script src="./start.js?v=1"></script>
+</body>
+</html>

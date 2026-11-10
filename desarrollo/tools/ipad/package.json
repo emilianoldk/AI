@@ -1,0 +1,6 @@
+{
+  "name": "nexus-ipad-build",
+  "private": true,
+  "scripts": { "build": "node build.cjs", "test": "node ../../tests/ipad.cjs" },
+  "devDependencies": { "@babel/core": "^7.28.0", "@babel/preset-env": "^7.28.0", "promise-polyfill": "^8.3.0", "jsdom": "^26.1.0", "acorn": "^8.15.0" }
+}
