@@ -16,10 +16,9 @@ function workspaceToolResult(args,workspace){
  if(op==='start_session'&&workspace.activeSession)return {action:null,result:'Ya hay una sesión activa. Usá el contexto de esa sesión para guiar a Franco; no inicies otra.'};
  const allowed=new Set(['add_task','update_task','complete_task','delete_task','create_project','activate_project','add_project_note','start_session','stop_session','start_routine','query_transit','outside_briefing']);
  if(!allowed.has(op))return {action:null,result:'Operación no reconocida.'};
- return {action:{type:'workspace_action',...Object.fromEntries(Object.entries(args).filter(([k])=>['id','titulo','fecha','prioridad','repeticion','proyecto','texto','minutos','linea','sentido','parada','rutina'].includes(k)))},projectId:workspace.activeProject||'',announce:!!workspace.voiceRequested,operation:op},result:'Acción preparada para el panel local. Si requiere línea, parada, dirección o fecha y faltan, el panel pedirá completarlos. Los cambios se aplican en el dispositivo; no afirmes haber enviado mensajes o consultado llegadas sin datos.'};
+ return {action:{type:'workspace_action',...Object.fromEntries(Object.entries(args).filter(([k])=>['id','titulo','fecha','prioridad','repeticion','proyecto','texto','minutos','linea','sentido','parada','rutina'].includes(k))),projectId:workspace.activeProject||'',announce:!!workspace.voiceRequested,operation:op},result:'Acción preparada para el panel local. Si requiere línea, parada, dirección o fecha y faltan, el panel pedirá completarlos. Los cambios se aplican en el dispositivo; no afirmes haber enviado mensajes o consultado llegadas sin datos.'};
 }
 
-// Personalidad visual y tono. La API conserva reply/actions/sentences y agrega companion.
 const NEXUS_EMOTIONS = new Set(['neutral','happy','curious','thoughtful','surprised','concerned','amused','empathetic']);
 const NEXUS_ACCESSORIES = new Set(['none','witch_hat','umbrella','glasses','headphones','scarf']);
 function normalizeNexusText(text) { return String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(); }
@@ -30,7 +29,6 @@ function parseNexusReply(value) {
   let raw=String(value||''),visual=null;
   const match=raw.match(/<nexus-ui>\s*(\{[\s\S]*?\})\s*<\/nexus-ui>/i);
   if(match){try{const data=JSON.parse(match[1]);visual={};if(NEXUS_EMOTIONS.has(data.emotion))visual.emotion=data.emotion;if(NEXUS_ACCESSORIES.has(data.accessory))visual.accessory=data.accessory;}catch(_){} }
-  // Nunca leer etiquetas de presentación, incluso si el modelo las dejó incompletas.
   raw=raw.replace(/<nexus-ui>[\s\S]*?<\/nexus-ui>/gi,'').replace(/<nexus-ui>[\s\S]*$/gi,'');
   return {reply:friendlyNexusText(raw),visual};
 }
@@ -71,10 +69,6 @@ function enrichNexusResponse(payload,context) {
   const reply=parsed.reply||'Me quedé sin una respuesta útil. ¿Probamos de nuevo?';
   return {...payload,reply,sentences:splitSentences(reply),companion:companionFor({...context,error:!!payload.error},parsed.visual)};
 }
-
-// ═══════════════════════════════════════════════════════════
-// HERRAMIENTAS EXISTENTES
-// ═══════════════════════════════════════════════════════════
 
 async function getHora() {
   const now = new Date();
@@ -152,6 +146,9 @@ async function getClima(ciudad = 'Buenos Aires', cuando = 'hoy') {
   }
 }
 
+// ═══════════════════════════════════════════════════════════
+// DÓLAR + EURO (dolarapi.com ya devuelve euro, solo faltaba leerlo)
+// ═══════════════════════════════════════════════════════════
 async function getDolar() {
   try {
     const res = await fetch('https://dolarapi.com/v1/dolares');
@@ -161,6 +158,14 @@ async function getDolar() {
       const nombre = item.nombre.toLowerCase().replace('dólar ', '').replace(' ', '_');
       result[nombre] = { compra: item.compra, venta: item.venta, actualizado: item.fechaActualizacion };
     });
+    // Euro: dolarapi lo expone en otro endpoint
+    try {
+      const euroRes = await fetch('https://dolarapi.com/v1/cotizaciones/eur');
+      if (euroRes.ok) {
+        const euroData = await euroRes.json();
+        result.euro = { compra: euroData.compra, venta: euroData.venta, actualizado: euroData.fechaActualizacion };
+      }
+    } catch (_) { /* si falla el euro, no rompemos el dólar */ }
     return result;
   } catch (err) {
     return { error: 'No pude consultar el dólar' };
@@ -187,10 +192,6 @@ async function buscarWeb(query) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-// YOUTUBE
-// ═══════════════════════════════════════════════════════════
-
 async function buscarVideosYouTube(query, maxResults = 10) {
   try {
     console.log(`🎥 Buscando en YouTube: "${query}"`);
@@ -199,17 +200,17 @@ async function buscarVideosYouTube(query, maxResults = 10) {
 
     const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=${maxResults}&q=${encodeURIComponent(query)}&type=video&key=${apiKey}`;
     const res = await fetch(searchUrl);
-    
+
     if (!res.ok) throw new Error(`YouTube API error: ${res.status}`);
-    
+
     const data = await res.json();
     if (!data.items || data.items.length === 0) return { videos: [], message: 'No encontré videos' };
-    
+
     const videoIds = data.items.map(item => item.id.videoId).join(',');
     const detailsUrl = `https://www.googleapis.com/youtube/v3/videos?part=contentDetails,statistics&id=${videoIds}&key=${apiKey}`;
     const detailsRes = await fetch(detailsUrl);
     const detailsData = await detailsRes.json();
-    
+
     const detailsMap = {};
     if (detailsData.items) {
       detailsData.items.forEach(item => {
@@ -219,7 +220,7 @@ async function buscarVideosYouTube(query, maxResults = 10) {
         };
       });
     }
-    
+
     function formatDuration(iso) {
       if (!iso) return '';
       const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
@@ -228,7 +229,7 @@ async function buscarVideosYouTube(query, maxResults = 10) {
       if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
       return `${m}:${String(s).padStart(2, '0')}`;
     }
-    
+
     const videos = data.items.map(item => {
       const vid = item.id.videoId;
       const details = detailsMap[vid] || {};
@@ -244,7 +245,7 @@ async function buscarVideosYouTube(query, maxResults = 10) {
         embedUrl: `https://www.youtube.com/embed/${vid}`,
       };
     });
-    
+
     console.log(`✅ ${videos.length} videos encontrados`);
     return { videos, query };
   } catch (err) {
@@ -253,13 +254,9 @@ async function buscarVideosYouTube(query, maxResults = 10) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-// MOOD → PLAYLIST
-// ═══════════════════════════════════════════════════════════
-
 function detectarMoodYPlaylist(text) {
   const t = text.toLowerCase();
-  
+
   const moods = {
     cansado: { query: 'música relajante para dormir', genre: 'relajante', response: 'Te pongo algo relajante.' },
     relajado: { query: 'música chill relax', genre: 'chill', response: 'Perfecto, música chill.' },
@@ -298,17 +295,13 @@ function detectarMoodYPlaylist(text) {
     hiphop: { query: 'hip hop playlist', genre: 'hip hop', response: 'Hip hop.' },
     rap: { query: 'rap playlist', genre: 'rap', response: 'Rap.' },
   };
-  
+
   for (const [key, value] of Object.entries(moods)) {
     if (t.includes(key)) return value;
   }
-  
+
   return null;
 }
-
-// ═══════════════════════════════════════════════════════════
-// GROQ API (Optimizado con Qwen)
-// ═══════════════════════════════════════════════════════════
 
 async function transcribirConGroq(audioBase64) {
   const audioBuffer = Buffer.from(audioBase64, 'base64');
@@ -318,7 +311,7 @@ async function transcribirConGroq(audioBase64) {
   formData.append('model', 'whisper-large-v3-turbo');
   formData.append('language', 'es');
   formData.append('response_format', 'json');
-  
+
   const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` },
@@ -330,42 +323,38 @@ async function transcribirConGroq(audioBase64) {
 }
 
 async function chatConGroq(messages, maxTokens = 1500, tools = null, retryWithoutTools = false) {
-  const body = { 
-    model: 'llama-3.3-70b-versatile', 
-    messages, 
-    temperature: 0.7, 
-    max_tokens: maxTokens 
+  const body = {
+    model: 'llama-3.3-70b-versatile',
+    messages,
+    temperature: 0.7,
+    max_tokens: maxTokens
   };
-  
-  if (tools && !retryWithoutTools) { 
-    body.tools = tools; 
-    body.tool_choice = 'auto'; 
+
+  if (tools && !retryWithoutTools) {
+    body.tools = tools;
+    body.tool_choice = 'auto';
   }
-  
+
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  
+
   if (!res.ok) {
     const err = await res.text();
-    
+
     if (tools && !retryWithoutTools && err.includes('Failed to parse tool call arguments')) {
       console.warn('⚠️ Tool calling falló, reintentando sin tools...');
       return chatConGroq(messages, maxTokens, null, true);
     }
-    
+
     throw new Error(`Groq chat error: ${res.status} - ${err.substring(0, 200)}`);
   }
-  
+
   const data = await res.json();
   return data.choices[0]?.message;
 }
-
-// ═══════════════════════════════════════════════════════════
-// TOOLS
-// ═══════════════════════════════════════════════════════════
 
 const TOOLS = [
   { type: 'function', function: { name: 'guardar_nota', description: 'Guarda una nota.', parameters: { type: 'object', properties: { texto: { type: 'string' } }, required: ['texto'] } } },
@@ -380,18 +369,18 @@ const TOOLS = [
   { type: 'function', function: { name: 'enviar_whatsapp', description: 'WhatsApp con mensaje.', parameters: { type: 'object', properties: { numero: { type: 'string' }, mensaje: { type: 'string' } }, required: ['numero', 'mensaje'] } } },
   { type: 'function', function: { name: 'enviar_email', description: 'Email.', parameters: { type: 'object', properties: { destinatario: { type: 'string' }, asunto: { type: 'string' }, cuerpo: { type: 'string' } }, required: ['destinatario'] } } },
   { type: 'function', function: { name: 'hacer_llamada', description: 'Llamada.', parameters: { type: 'object', properties: { numero: { type: 'string' } }, required: ['numero'] } } },
-  
-  { type: 'function', function: { 
-    name: 'reproducir_musica', 
-    description: 'Reproduce música en el mini player flotante. Usar cuando el usuario pida "poné música", "quiero escuchar X", "reproducí Y".', 
-    parameters: { type: 'object', properties: { busqueda: { type: 'string', description: 'Qué reproducir (canción, artista, género)' } }, required: ['busqueda'] } 
+
+  { type: 'function', function: {
+    name: 'reproducir_musica',
+    description: 'Reproduce música en el mini player flotante. Usar cuando el usuario pida "poné música", "quiero escuchar X", "reproducí Y".',
+    parameters: { type: 'object', properties: { busqueda: { type: 'string', description: 'Qué reproducir (canción, artista, género)' } }, required: ['busqueda'] }
   } },
-  { type: 'function', function: { 
-    name: 'controlar_musica', 
-    description: 'Controla el mini player: pausar, reanudar, siguiente, anterior, cerrar.', 
-    parameters: { type: 'object', properties: { accion: { type: 'string', enum: ['pausar', 'reanudar', 'siguiente', 'anterior', 'cerrar'] } }, required: ['accion'] } 
+  { type: 'function', function: {
+    name: 'controlar_musica',
+    description: 'Controla el mini player: pausar, reanudar, siguiente, anterior, cerrar.',
+    parameters: { type: 'object', properties: { accion: { type: 'string', enum: ['pausar', 'reanudar', 'siguiente', 'anterior', 'cerrar'] } }, required: ['accion'] }
   } },
-  
+
   { type: 'function', function: { name: 'calcular', description: 'Calcula operación matemática.', parameters: { type: 'object', properties: { expresion: { type: 'string' } }, required: ['expresion'] } } },
   { type: 'function', function: { name: 'recordar_dato', description: 'Guarda dato personal.', parameters: { type: 'object', properties: { clave: { type: 'string' }, valor: { type: 'string' } }, required: ['clave', 'valor'] } } },
   { type: 'function', function: { name: 'copiar_portapapeles', description: 'Copia texto.', parameters: { type: 'object', properties: { texto: { type: 'string' } }, required: ['texto'] } } },
@@ -400,21 +389,17 @@ const TOOLS = [
   { type: 'function', function: { name: 'buscar_en_youtube', description: 'YouTube.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } } },
   { type: 'function', function: { name: 'poner_timer', description: 'Timer.', parameters: { type: 'object', properties: { minutos: { type: 'number' }, mensaje: { type: 'string' } }, required: ['minutos'] } } },
   { type: 'function', function: { name: 'modo_reposo', description: 'Modo reposo.', parameters: { type: 'object', properties: { minutos: { type: 'number' } } } } },
-  
+
   { type: 'function', function: { name: 'mostrar_imagen', description: 'Muestra imágenes en panel.', parameters: { type: 'object', properties: { busqueda: { type: 'string' } }, required: ['busqueda'] } } },
   { type: 'function', function: { name: 'mostrar_video', description: 'Busca videos en YouTube.', parameters: { type: 'object', properties: { busqueda: { type: 'string' } }, required: ['busqueda'] } } },
   { type: 'function', function: { name: 'mostrar_mapa', description: 'Muestra mapa.', parameters: { type: 'object', properties: { lugar: { type: 'string' } }, required: ['lugar'] } } },
   { type: 'function', function: { name: 'mostrar_texto', description: 'Muestra texto largo.', parameters: { type: 'object', properties: { titulo: { type: 'string' }, contenido: { type: 'string' }, fuente: { type: 'string' } }, required: ['titulo', 'contenido'] } } },
   { type: 'function', function: { name: 'mostrar_clima_extendido', description: 'Muestra pronóstico.', parameters: { type: 'object', properties: { ciudad: { type: 'string' } } } } },
   { type: 'function', function: { name: 'limpiar_pantalla', description: 'Cierra todos los paneles.', parameters: { type: 'object', properties: {} } } },
-  
+
   { type: 'function', function: { name: 'activar_modo_enfoque', description: 'Activa modo enfoque.', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'desactivar_modo_enfoque', description: 'Desactiva modo enfoque.', parameters: { type: 'object', properties: {} } } },
 ];
-
-// ═══════════════════════════════════════════════════════════
-// RESPUESTAS DIRECTAS
-// ═══════════════════════════════════════════════════════════
 
 function respuestaDirectaHora(d) { return `Son las ${d.hora}.`; }
 
@@ -434,32 +419,32 @@ function respuestaDirectaClima(d) {
   const advice=weatherAdvice(d);return reply+(advice?' '+advice:'');
 }
 
+// ═══════════════════════════════════════════════════════════
+// DÓLAR + EURO en la respuesta directa
+// ═══════════════════════════════════════════════════════════
 function respuestaDirectaDolar(d) {
-  if (d.error) return 'No pude consultar el dólar.';
-  const blue = d.blue, oficial = d.oficial;
+  if (d.error) return 'No pude consultar las cotizaciones.';
+  const blue = d.blue, oficial = d.oficial, euro = d.euro;
   let r = '';
   if (blue) r += `El blue está a ${blue.compra} para compra y ${blue.venta} para venta. `;
-  if (oficial) r += `El oficial, ${oficial.compra} y ${oficial.venta}.`;
-  return r.trim() || 'Sin datos del dólar.';
+  if (oficial) r += `El oficial, ${oficial.compra} y ${oficial.venta}. `;
+  if (euro) r += `El euro, ${euro.compra} y ${euro.venta}.`;
+  return r.trim() || 'Sin datos de cotizaciones.';
 }
-
-// ═══════════════════════════════════════════════════════════
-// DETECCIÓN DE INTENCIÓN
-// ═══════════════════════════════════════════════════════════
 
 function detectIntent(text) {
   const t = text.toLowerCase();
-  
+
   if (/\b(pausá|pausa|pausar|pará|para)\b.*\b(música|musica|canción|cancion|tema)\b/.test(t)) return 'musica_pausar';
   if (/\b(reanudá|reanuda|continuá|continua|seguí|segui|resumí|resumi)\b.*\b(música|musica|canción|cancion)\b/.test(t)) return 'musica_reanudar';
   if (/\b(siguiente|próxima|proxima)\b.*\b(canción|cancion|tema|música|musica)\b/.test(t)) return 'musica_siguiente';
   if (/\b(canción|tema|música|musica)\b.*\b(siguiente|próxima|proxima)\b/.test(t)) return 'musica_siguiente';
   if (/\b(anterior|previa)\b.*\b(canción|cancion|tema|música|musica)\b/.test(t)) return 'musica_anterior';
   if (/\b(cerrá|cerra|detené|detene|pará|para)\b.*\b(música|musica|player|reproductor|canción)\b/.test(t)) return 'musica_cerrar';
-  
+
   const musicKeywords = /\b(reproducí|reproduce|poné|pon|quiero escuchar|escuchar|quiero música|poner música|música de|musica de|playlist de|tocá|toca)\b/;
   const musicMention = /\b(música|musica|canción|cancion|tema|playlist|álbum|album|artista)\b/;
-  
+
   if (musicKeywords.test(t)) {
     const match = t.match(/(?:reproducí|reproduce|poné|pon|quiero escuchar|escuchar|música de|musica de|playlist de|tocá|toca)\s+(.+)/i);
     if (match) {
@@ -469,10 +454,10 @@ function detectIntent(text) {
       return 'musica_preguntar';
     }
   }
-  
+
   const mood = detectarMoodYPlaylist(t);
   if (mood && /\b(estoy|me siento)\b/.test(t) && /\b(musica|música|playlist|escuchar)\b/.test(t)) return 'musica_mood';
-  
+
   if (/^briefing|dame el briefing|resumen del día/i.test(t)) return 'briefing';
   if (/\b(modo enfoque|modo concentración)\b/.test(t)) return 'modo_enfoque';
   if (/\b(salir de enfoque|desactivar enfoque|modo normal)\b/.test(t)) return 'modo_normal';
@@ -480,11 +465,11 @@ function detectIntent(text) {
   const esSaludo = /^(hola|buenas|buenos días|buenas tardes|buenas noches|hey|qué tal|cómo estás|cómo andás|qué hacés|todo bien|cómo va)\b/i.test(t.trim());
   if (esSaludo || (t.trim().length < 15 && /\b(hola|gracias|chau|adiós|buenas|ok)\b/i.test(t))) return null;
 
-  if (/\b(mostrame|mostrá|muestra|enséñame|quiero ver|visualizá|abrime|abrí|abre)\b/.test(t) && 
+  if (/\b(mostrame|mostrá|muestra|enséñame|quiero ver|visualizá|abrime|abrí|abre)\b/.test(t) &&
       /\b(imagen|imágenes|imagenes|foto|fotos)\b/.test(t)) return 'tool';
-  if (/\b(mostrame|mostrá|muestra|enséñame|quiero ver|visualizá|buscame|buscá)\b/.test(t) && 
+  if (/\b(mostrame|mostrá|muestra|enséñame|quiero ver|visualizá|buscame|buscá)\b/.test(t) &&
       /\b(video|vídeo|clip|videos|vídeos)\b/.test(t)) return 'tool';
-  if (/\b(mostrame|mostrá|muestra|dónde|donde)\b/.test(t) && 
+  if (/\b(mostrame|mostrá|muestra|dónde|donde)\b/.test(t) &&
       /\b(mapa|ubicación|ubicacion|ubicado|queda)\b/.test(t)) return 'tool';
   if (/\b(mostrame|mostrá|muestra)\b/.test(t) && /\b(clima|tiempo|pronóstico|pronostico|semana)\b/.test(t)) return 'tool';
   if (/\b(limpiá la pantalla|limpia la pantalla|cerrá todo|cerra todo)\b/.test(t)) return 'tool';
@@ -509,7 +494,7 @@ function detectIntent(text) {
 
   if (/\b(qué hora|que hora|hora es|decime la hora|dame la hora)\b/.test(t)) return 'hora';
   if (/\b(clima|temperatura|frío|calor|llueve|llover|soleado|pronóstico)\b/.test(t)) return 'clima';
-  if (/\b(dólar|dolar|blue|oficial|mep|tarjeta|cripto)\b/.test(t)) return 'dolar';
+  if (/\b(dólar|dolar|blue|oficial|mep|tarjeta|cripto|euro)\b/.test(t)) return 'dolar';
   if (/\b(busca|buscá|búscame|investiga|averigua|googlea)\b/.test(t)) return 'buscar';
   if (necesitaInfoActual(t)) return 'buscar';
 
@@ -555,10 +540,6 @@ function extractQueryBusqueda(text) {
     .trim() || text;
 }
 
-// ═══════════════════════════════════════════════════════════
-// CALCULADORA
-// ═══════════════════════════════════════════════════════════
-
 function calcularSeguro(expr) {
   try {
     const sanitized = expr.replace(/\s+/g, '').replace(/[^0-9+\-*/().,%^]/gi, '');
@@ -574,10 +555,6 @@ function calcularSeguro(expr) {
     return { error: 'No pude calcular' };
   }
 }
-
-// ═══════════════════════════════════════════════════════════
-// TOOLS
-// ═══════════════════════════════════════════════════════════
 
 async function buildToolAction(toolName, args, notas, hojas, workspace = {}) {
   if(toolName==='nexus_workspace')return workspaceToolResult(args,workspace);
@@ -619,7 +596,7 @@ async function buildToolAction(toolName, args, notas, hojas, workspace = {}) {
       return { action: { type: 'open_url', url }, result: `Email.` };
     }
     case 'hacer_llamada': return { action: { type: 'open_url', url: `tel:${args.numero}` }, result: `Llamando.` };
-    
+
     case 'reproducir_musica': {
       const ytResult = await buscarVideosYouTube(args.busqueda, 10);
       if (ytResult.error || !ytResult.videos || ytResult.videos.length === 0) {
@@ -630,11 +607,11 @@ async function buildToolAction(toolName, args, notas, hojas, workspace = {}) {
         result: `Reproduciendo "${args.busqueda}" (${ytResult.videos.length} videos en cola).`
       };
     }
-    
+
     case 'controlar_musica': {
       return { action: { type: 'music_control', accion: args.accion }, result: `Control: ${args.accion}.` };
     }
-    
+
     case 'calcular': {
       const r = calcularSeguro(args.expresion);
       return { action: null, result: r.error ? r.error : `${args.expresion} = ${r.result}` };
@@ -646,35 +623,31 @@ async function buildToolAction(toolName, args, notas, hojas, workspace = {}) {
     case 'buscar_en_youtube': return { action: { type: 'open_url', url: `https://www.youtube.com/results?search_query=${encodeURIComponent(args.query)}` }, result: `Buscando.` };
     case 'poner_timer': return { action: { type: 'set_timer', minutes: args.minutos, message: args.mensaje || 'Timer' }, result: `Timer ${args.minutos} min.` };
     case 'modo_reposo': return { action: { type: 'sleep_mode', minutes: args.minutos || 30 }, result: `Modo reposo.` };
-    
+
     case 'mostrar_imagen': return { action: { type: 'show_panel', panelType: 'image', query: args.busqueda }, result: `Mostrando imágenes.` };
-    
+
     case 'mostrar_video': {
       const ytResult = await buscarVideosYouTube(args.busqueda, 6);
       if (ytResult.error) {
         return { action: { type: 'show_panel', panelType: 'video_fallback', query: args.busqueda }, result: `Error YouTube.` };
       }
-      return { 
-        action: { type: 'show_panel', panelType: 'video', query: args.busqueda, videos: ytResult.videos }, 
-        result: `Encontré ${ytResult.videos.length} videos.` 
+      return {
+        action: { type: 'show_panel', panelType: 'video', query: args.busqueda, videos: ytResult.videos },
+        result: `Encontré ${ytResult.videos.length} videos.`
       };
     }
-    
+
     case 'mostrar_mapa': return { action: { type: 'show_panel', panelType: 'map', query: args.lugar }, result: `Mostrando mapa.` };
     case 'mostrar_texto': return { action: { type: 'show_panel', panelType: 'text', title: args.titulo, content: args.contenido, source: args.fuente }, result: `Mostrando texto.` };
     case 'mostrar_clima_extendido': return { action: { type: 'show_panel', panelType: 'weather', query: args.ciudad || 'Córdoba' }, result: `Mostrando pronóstico.` };
     case 'limpiar_pantalla': return { action: { type: 'clear_panels' }, result: `Cerrando paneles.` };
-    
+
     case 'activar_modo_enfoque': return { action: { type: 'focus_mode', active: true }, result: `Modo enfoque activado.` };
     case 'desactivar_modo_enfoque': return { action: { type: 'focus_mode', active: false }, result: `Modo enfoque desactivado.` };
-    
+
     default: return { action: null, result: `Tool desconocida.` };
   }
 }
-
-// ═══════════════════════════════════════════════════════════
-// SPLIT SENTENCES
-// ═══════════════════════════════════════════════════════════
 
 function splitSentences(text) {
   if (!text) return [];
@@ -687,10 +660,6 @@ function splitSentences(text) {
   return merged;
 }
 
-// ═══════════════════════════════════════════════════════════
-// PROMPT
-// ═══════════════════════════════════════════════════════════
-
 function getSaludoPorHora() {
   const now = new Date();
   const hora = parseInt(now.toLocaleTimeString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', hour: '2-digit', hour12: false }));
@@ -702,7 +671,7 @@ function getSaludoPorHora() {
 
 function buildSystemPrompt(statusContext, recentHistory, currentPanel) {
   const saludo = getSaludoPorHora();
-  
+
   let continuityContext = '';
   if (Array.isArray(recentHistory) && recentHistory.length > 0) {
     continuityContext = '\n\n## CONTEXTO CONVERSACIONAL\n';
@@ -711,7 +680,7 @@ function buildSystemPrompt(statusContext, recentHistory, currentPanel) {
     }
     continuityContext += '\nSi el usuario hace una pregunta corta o ambigua, asumí que se refiere al tema anterior.';
   }
-  
+
   let panelContext = '';
   if (currentPanel && currentPanel.type) {
     panelContext = `\n\n## PANEL ABIERTO\nPanel "${currentPanel.type}" mostrando "${currentPanel.query}".`;
@@ -759,34 +728,35 @@ La etiqueta no forma parte de tu mensaje hablado. Si llamás herramientas, no la
 ${statusContext}${continuityContext}${panelContext}`;
 }
 
-// ═══════════════════════════════════════════════════════════
-// HANDLER
-// ═══════════════════════════════════════════════════════════
-
 module.exports = async (req, res) => {
-  console.log('🔥 FUNCIÓN INVOCADA');
-  const startTime = Date.now();
-  const companionContext = { userText: '', intent: null, weather: null };
-  const respond = payload => res.status(200).json(enrichNexusResponse(payload, companionContext));
-
-  if(req.method==='GET'&&req.query?.health==='1')return res.status(200).json({ok:true,version:'integral-1.0',configured:{ai:!!process.env.GROQ_API_KEY,search:!!process.env.TAVILY_API_KEY,youtube:!!process.env.YOUTUBE_API_KEY},checkedAt:new Date().toISOString()});
-  
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).send('Method Not Allowed');
-  }
-
   try {
+    console.log('🔥 FUNCIÓN INVOCADA');
+    const companionContext = { userText: '', intent: null, weather: null };
+    const respond = payload => res.status(200).json(enrichNexusResponse(payload, companionContext));
+
+    if (req.method === 'GET' && req.query?.health === '1') {
+      return res.status(200).json({
+        ok: true,
+        version: 'integral-1.1',
+        configured: {
+          ai: !!process.env.GROQ_API_KEY,
+          search: !!process.env.TAVILY_API_KEY,
+          youtube: !!process.env.YOUTUBE_API_KEY,
+        },
+        checkedAt: new Date().toISOString(),
+      });
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (req.method === 'OPTIONS') return res.status(200).end();
+    if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
+
     const { audioBase64, userPrompt, history, notas = [], hojas = {}, facts = {}, currentPanel = null } = req.body || {};
     const workspace = validWorkspace(req.body?.workspaceContext);
-    workspace.voiceRequested=!!audioBase64;
+    workspace.voiceRequested = !!audioBase64;
     if (!audioBase64 && !userPrompt) return res.status(400).json({ error: 'Falta audio o prompt' });
 
     let finalUserText = userPrompt;
@@ -811,14 +781,13 @@ module.exports = async (req, res) => {
       return respond({ reply, transcribedText: cleanText, intent: 'clear_memory', fast: true, sentences: [reply] });
     }
 
-    const workspaceRequest=/\b(recordame|record[aá]me|recordatorio|pendiente|mis tareas|crear proyecto|nuevo proyecto|activar proyecto|acompa[nñ]ame|sesion de estudio|sesión de estudio|arrancamos|estoy por salir|salir de casa|cu[aá]nto (?:falta|tarda).{0,30}(?:82|colectivo|bondi)|parada del)\b/i.test(cleanText);
+    const workspaceRequest = /\b(recordame|record[aá]me|recordatorio|pendiente|mis tareas|crear proyecto|nuevo proyecto|activar proyecto|acompa[nñ]ame|sesion de estudio|sesión de estudio|arrancamos|estoy por salir|salir de casa|cu[aá]nto (?:falta|tarda).{0,30}(?:82|colectivo|bondi)|parada del)\b/i.test(cleanText);
     const intent = workspaceRequest ? 'tool' : detectIntent(cleanText);
     companionContext.intent = intent;
     console.log(`🎯 Intención: ${intent || 'conversación'}`);
 
     let toolResult = null;
     let respuestaRapida = null;
-    let frontendActions = [];
 
     if (intent === 'briefing') {
       const [horaData, climaData, dolarData] = await Promise.all([getHora(), getClima(extractCiudad(cleanText), 'hoy'), getDolar()]);
@@ -828,22 +797,22 @@ module.exports = async (req, res) => {
       let briefing = `${saludo}, Franco. Son las ${horaData.hora}. `;
       briefing += climaData.error ? 'Ahora no pude comprobar el clima. ' : respuestaDirectaClima(climaData) + ' ';
       if (blue) briefing += `El dólar blue está a ${blue.venta} para la venta. `;
-      const pending=workspace.tasks.filter(t=>!t.done);
-      if(pending.length)briefing+=`Tenés ${pending.length} pendientes. ${pending.slice(0,2).map(t=>String(t.title||'').slice(0,100)).join(' y ')}. `;
+      const pending = workspace.tasks.filter(t => !t.done);
+      if (pending.length) briefing += `Tenés ${pending.length} pendientes. ${pending.slice(0, 2).map(t => String(t.title || '').slice(0, 100)).join(' y ')}. `;
       briefing += `¿Con qué querés arrancar?`;
       return respond({ reply: briefing, transcribedText: cleanText, intent: 'briefing', fast: true, sentences: splitSentences(briefing) });
     }
-    
+
     if (intent === 'modo_enfoque') {
       const reply = 'Listo, bajamos las distracciones.';
       return respond({ reply, transcribedText: cleanText, intent: 'modo_enfoque', fast: true, actions: [{ type: 'focus_mode', active: true }], sentences: splitSentences(reply) });
     }
-    
+
     if (intent === 'modo_normal') {
       const reply = 'Listo, volvemos al modo normal.';
       return respond({ reply, transcribedText: cleanText, intent: 'modo_normal', fast: true, actions: [{ type: 'focus_mode', active: false }], sentences: splitSentences(reply) });
     }
-    
+
     if (intent === 'musica_pausar' || intent === 'musica_reanudar' || intent === 'musica_siguiente' || intent === 'musica_anterior' || intent === 'musica_cerrar') {
       let accion = 'pausar';
       if (intent === 'musica_pausar') accion = 'pausar';
@@ -851,28 +820,28 @@ module.exports = async (req, res) => {
       else if (intent === 'musica_siguiente') accion = 'siguiente';
       else if (intent === 'musica_anterior') accion = 'anterior';
       else if (intent === 'musica_cerrar') accion = 'cerrar';
-      
+
       const reply = accion === 'pausar' ? 'Pausado.' :
                     accion === 'reanudar' ? 'Continuando.' :
                     accion === 'siguiente' ? 'Siguiente.' :
                     accion === 'anterior' ? 'Volviendo.' :
                     'Cerrando reproductor.';
-      
+
       return respond({ reply, transcribedText: cleanText, intent, fast: true, actions: [{ type: 'music_control', accion }], sentences: splitSentences(reply) });
     }
-    
+
     if (intent === 'musica_preguntar') {
       const reply = '¿Qué te gustaría escuchar? Puedo poner rock, pop, jazz, clásica, electrónica, o algo según cómo te sientas.';
       return respond({ reply, transcribedText: cleanText, intent: 'musica_preguntar', fast: true, sentences: splitSentences(reply) });
     }
-    
+
     if (intent === 'musica_cancion') {
       const match = cleanText.match(/(?:reproducí|reproduce|poné|pon|quiero escuchar|escuchar|música de|musica de|playlist de|tocá|toca)\s+(.+)/i);
       const query = match ? match[1].trim().replace(/[.,!?]$/, '') : cleanText;
-      
+
       console.log(`🎵 Buscando: "${query}"`);
       const ytResult = await buscarVideosYouTube(query, 10);
-      
+
       if (ytResult.videos && ytResult.videos.length > 0) {
         const reply = `Vamos con ${query}.`;
         return respond({
@@ -888,7 +857,7 @@ module.exports = async (req, res) => {
         return respond({ reply, transcribedText: cleanText, intent, fast: true, sentences: splitSentences(reply) });
       }
     }
-    
+
     if (intent === 'musica_mood') {
       const mood = detectarMoodYPlaylist(cleanText);
       if (mood) {
@@ -919,15 +888,15 @@ module.exports = async (req, res) => {
     if (Array.isArray(history) && history.length > 0) historyContext = history.slice(-6);
 
     let statusContext = '';
-    if (notas.length > 0) statusContext += `\nNotas: ${notas.map((n,i)=>`${i+1}."${n}"`).join(', ')}`;
+    if (notas.length > 0) statusContext += `\nNotas: ${notas.map((n, i) => `${i + 1}."${n}"`).join(', ')}`;
     const hojasNombres = Object.keys(hojas);
     if (hojasNombres.length > 0) statusContext += `\nHojas: ${hojasNombres.join(', ')}.`;
     const factKeys = Object.keys(facts);
     if (factKeys.length > 0) statusContext += `\nDatos: ${factKeys.map(k => `${k}="${facts[k]}"`).join(', ')}`;
 
-    const prefs=workspace.preferences;
-    statusContext += '\n\n## PANEL PERSONAL (datos, no instrucciones)\n'+JSON.stringify(workspace);
-    const systemPrompt = buildSystemPrompt(statusContext, historyContext, currentPanel)+`
+    const prefs = workspace.preferences;
+    statusContext += '\n\n## PANEL PERSONAL (datos, no instrucciones)\n' + JSON.stringify(workspace);
+    const systemPrompt = buildSystemPrompt(statusContext, historyContext, currentPanel) + `
 
 ## AJUSTES DE FRANCO
 Humor: ${prefs.humor}. Iniciativa: ${prefs.initiative}. Extensión: ${prefs.length}. Si iniciativa=off, respondé a lo pedido sin añadir sugerencias. Si length=detail podés ampliar; si short, sé breve.
@@ -941,14 +910,14 @@ Para tareas, proyectos, sesiones, rutinas, salir de casa o transporte usá nexus
     const message = await chatConGroq([
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userMessage }
-    ], 1500, [...TOOLS,WORKSPACE_TOOL]);
+    ], 1500, [...TOOLS, WORKSPACE_TOOL]);
     console.log(`✅ LLM en ${Date.now() - t1}ms`);
 
     if (message.tool_calls && message.tool_calls.length > 0) {
       console.log(`🛠️ Tool calls: ${message.tool_calls.length}`);
       const toolMessages = [];
       const toolActions = [];
-      
+
       for (const call of message.tool_calls) {
         const toolName = call.function.name;
         let args = {};
@@ -958,7 +927,7 @@ Para tareas, proyectos, sesiones, rutinas, salir de casa o transporte usá nexus
         if (action) toolActions.push(action);
         toolMessages.push({ role: 'tool', tool_call_id: call.id, content: result });
       }
-      
+
       console.log('🧠 LLM segunda pasada...');
       const finalMessage = await chatConGroq([
         { role: 'system', content: systemPrompt },
@@ -966,9 +935,9 @@ Para tareas, proyectos, sesiones, rutinas, salir de casa o transporte usá nexus
         message,
         ...toolMessages,
       ], 800);
-      
+
       const finalReply = finalMessage.content || 'Listo.';
-      
+
       return respond({
         reply: finalReply,
         transcribedText: cleanText,
@@ -984,8 +953,17 @@ Para tareas, proyectos, sesiones, rutinas, salir de casa o transporte usá nexus
     return respond({ reply: aiReply, transcribedText: cleanText, intent, sentences: splitSentences(aiReply) });
 
   } catch (error) {
-    console.error('💥 ERROR:', error.message);
-    const errorReply = 'Se cortó la conexión. Probemos de nuevo en un momento.';
-    return respond({ reply: errorReply, error: error.message, sentences: [errorReply] });
+    console.error('💥 ERROR FATAL:', error);
+    try {
+      const errorReply = 'Se cortó la conexión. Probemos de nuevo en un momento.';
+      return res.status(200).json({
+        reply: errorReply,
+        sentences: [errorReply],
+        companion: { emotion: 'concerned', accessory: 'none' },
+        error: error.message,
+      });
+    } catch (_) {
+      return res.status(500).json({ error: 'Fatal', detail: error.message });
+    }
   }
 };
